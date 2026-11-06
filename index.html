@@ -1,0 +1,155 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>TrueRedact — real redaction, entirely in your browser</title>
+<meta name="description" content="TrueRedact destroys sensitive information in PDFs and images by rebuilding every redacted page from raw pixels. No overlay boxes, no recoverable text. 100% client-side — your files never leave your device.">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='10' fill='%230d1117'/%3E%3Crect x='10' y='26' width='44' height='12' fill='%23000' stroke='%23e5484d' stroke-width='3'/%3E%3Cpath d='M14 14h36M14 50h36' stroke='%2330363d' stroke-width='4' stroke-linecap='round'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="style.css">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf-lib/1.17.1/pdf-lib.min.js" defer></script>
+<script type="module" src="app.js" defer></script>
+</head>
+<body>
+
+<header class="site-header">
+  <div class="wrap header-inner">
+    <div class="brand">
+      <span class="logo" aria-hidden="true"><span class="logo-bar"></span></span>
+      <div>
+        <h1>TrueRedact</h1>
+        <p class="tagline">Redaction that actually destroys the data.</p>
+      </div>
+    </div>
+    <span class="pill pill-offline" id="netPill" title="This tool makes zero network requests after the page loads. Your files are processed entirely on this device.">● Files never leave this device</span>
+  </div>
+</header>
+
+<main class="wrap">
+
+  <!-- ============ Explainer: why black boxes fail ============ -->
+  <section class="explainer" aria-labelledby="why-h">
+    <h2 id="why-h">Why a black box over text usually isn’t redaction</h2>
+    <p>
+      Drawing a rectangle over text in Word, PowerPoint, Preview or most PDF tools doesn’t remove
+      anything — it just paints over the original content, which stays in the file underneath. Select-all
+      and copy, drag the box away, or convert the file format, and the “redacted” text comes right back.
+      It has happened in court filings, law-firm briefs, and repeatedly with the released Epstein files in
+      2025–2026, where people un-redacted “hidden” text with three keystrokes (Ctrl+A, Ctrl+C, Ctrl+V);
+      an academic study of 11 popular redaction tools — including Adobe Acrobat — found several still leaked.
+    </p>
+    <p>
+      TrueRedact works differently: it renders each page to raw pixels, burns the black boxes
+      <em>into the pixel data itself</em>, and rebuilds the PDF from those pixels. There is no separate
+      object to peel away because the box <em>is</em> the page. As proof, the app re-opens its own output
+      and searches every redacted page for extractable text — and shows you the result.
+    </p>
+  </section>
+
+  <!-- ============ Drop zone ============ -->
+  <section aria-labelledby="drop-h">
+    <h2 id="drop-h" class="sr-only">Add files</h2>
+    <div id="dropzone" class="dropzone" role="button" tabindex="0" aria-label="Drop PDFs or images here, or press Enter to browse for files">
+      <p class="dz-big">Drag &amp; drop PDFs or images</p>
+      <p class="dz-sub">or</p>
+      <button type="button" id="browseBtn" class="btn btn-secondary">Choose files…</button>
+      <input type="file" id="fileInput" accept=".pdf,.png,.jpg,.jpeg,.webp,.gif,.bmp,application/pdf,image/png,image/jpeg,image/webp,image/gif,image/bmp" multiple hidden>
+      <p class="dz-note">PDF · PNG · JPG · WEBP · GIF · BMP — processed locally, nothing is uploaded</p>
+    </div>
+    <ul id="fileList" class="file-list" aria-live="polite"></ul>
+  </section>
+
+  <!-- ============ Workspace ============ -->
+  <section id="workspace" class="workspace" hidden aria-label="Redaction workspace">
+    <div class="ws-top">
+      <div class="file-tabs" id="fileTabs" role="tablist" aria-label="Loaded files"></div>
+      <button type="button" id="removeFileBtn" class="btn btn-small btn-danger-outline" title="Remove the current file from the session">✕ Remove file</button>
+    </div>
+
+    <div class="stage-row">
+      <div class="stage-col">
+        <div class="page-nav" id="pageNav">
+          <button type="button" id="prevPageBtn" class="btn btn-small" aria-label="Previous page">‹ Prev</button>
+          <span id="pageIndicator" class="page-indicator">Page 1 / 1</span>
+          <button type="button" id="nextPageBtn" class="btn btn-small" aria-label="Next page">Next ›</button>
+          <span class="spacer"></span>
+          <button type="button" id="undoBoxBtn" class="btn btn-small" title="Remove the last box added (Ctrl+Z)">⌫ Undo last box</button>
+          <button type="button" id="clearBoxesBtn" class="btn btn-small btn-danger-outline">Clear all boxes</button>
+        </div>
+
+        <div class="canvas-scroll" id="canvasScroll">
+          <div class="canvas-wrap" id="canvasWrap">
+            <canvas id="mainCanvas" width="10" height="10"></canvas>
+            <div id="busyOverlay" class="busy" hidden><span class="spinner"></span><span id="busyText">Rendering…</span></div>
+          </div>
+        </div>
+        <p class="hint">Click and drag on the page to draw a redaction box. Boxes are applied when you press the big button below.</p>
+      </div>
+
+      <aside class="sidebar">
+        <h3>Pending redactions <span class="count-chip" id="boxCountChip">0</span></h3>
+        <ul id="boxList" class="box-list" aria-live="polite"></ul>
+        <p id="boxListEmpty" class="muted small">No boxes yet. Drag rectangles over anything you want permanently destroyed.</p>
+
+        <div class="apply-block">
+          <button type="button" id="applyBtn" class="btn btn-danger btn-apply" disabled>Apply Redactions</button>
+          <p class="warn-text"><strong>Irreversible.</strong> Applying burns the boxes into the page’s pixels and rebuilds the document. You cannot undo it on this document — start a new file to begin again.</p>
+        </div>
+
+        <div id="verifyPanel" class="verify-panel" hidden aria-live="assertive"></div>
+
+        <div class="download-block" id="downloadBlock" hidden>
+          <a id="downloadLink" class="btn btn-success btn-download" download>⬇ Download redacted file</a>
+          <p class="muted small" id="outputSize"></p>
+        </div>
+      </aside>
+    </div>
+
+    <div class="tradeoff">
+      <h3>What “Apply” does to your file — be aware</h3>
+      <ul>
+        <li><strong>The entire redacted page becomes one flat image</strong> — not just the black box. Text on those pages is no longer selectable or searchable. That is the safety guarantee, deliberately chosen over surgically editing the PDF’s content stream (which is where most “sophisticated” tools still get it wrong).</li>
+        <li><strong>Pages without any box keep their original text layer.</strong> Only pages you actually redact get flattened.</li>
+        <li><strong>For images,</strong> re-encoding through the canvas also strips EXIF metadata as a side effect — including embedded GPS coordinates. Most people don’t realize their photos carry location data at all; after TrueRedact, they don’t.</li>
+      </ul>
+    </div>
+  </section>
+
+  <!-- ============ Honest limits ============ -->
+  <section class="limits" aria-labelledby="limits-h">
+    <h3 id="limits-h">Honest limits</h3>
+    <ul>
+      <li>TrueRedact does <strong>not auto-detect</strong> SSNs, names, account numbers, or anything else. You mark the regions yourself. We left auto-detection out of v1 on purpose: a pattern-matcher that quietly misses one line creates false confidence, which is worse than none.</li>
+      <li>This tool is <strong>not a substitute for professional review</strong> on legal, medical, or classified documents. It gives you a genuinely destroyed output — but deciding <em>what</em> must be destroyed is still your job.</li>
+    </ul>
+  </section>
+
+  <!-- ============ Offline / privacy ============ -->
+  <section class="offline-card" aria-labelledby="offline-h">
+    <h3 id="offline-h">Try it with your Wi-Fi off</h3>
+    <p>
+      After this page finishes loading, everything happens inside your browser: pdf.js turns pages into
+      pixels, the Canvas API burns the boxes in, pdf-lib rebuilds the file, and the verification pass runs
+      locally. No server, no upload, no analytics, no telemetry. Turn off your network and try it —
+      <strong>it provably keeps working.</strong> The only network traffic ever generated is fetching these
+      two open-source libraries (pdf.js and pdf-lib) when the page first loads.
+    </p>
+  </section>
+
+</main>
+
+<div id="toastRegion" class="toasts" aria-live="assertive"></div>
+
+<footer class="site-footer">
+  <div class="wrap">
+    <p>TrueRedact — destroy, don’t cover. Built with pdf.js and pdf-lib, running entirely in your browser.</p>
+    <p class="footer-note">Not a substitute for professional review on legal, medical, or classified documents.</p>
+  </div>
+</footer>
+
+<noscript>
+  <div class="wrap noscript-banner">TrueRedact is a purely client-side tool and requires JavaScript. Nothing is uploaded either way.</div>
+</noscript>
+
+</body>
+</html>
